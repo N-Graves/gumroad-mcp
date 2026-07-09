@@ -8,8 +8,12 @@ import {
 import { config } from "dotenv";
 
 import { GumroadClient } from "./gumroad-client.js";
+import { requireCapability } from "./agent-capability.js";
 
 config();
+
+const REQUIRED_CAPABILITY = "listings"; // PUBLISHER owns Gumroad listings/catalog
+const AGENT_ID_PROPERTY = { agent_id: { type: "string", description: "Your fleet-board agent id, e.g. 'publisher'" } };
 
 const getProducts: Tool = {
   name: "gumroad_get_products",
@@ -67,25 +71,27 @@ const getUser: Tool = {
 
 const disableProduct: Tool = {
   name: "gumroad_disable_product",
-  description: "Disables a product by its ID",
+  description: "Disables a product by its ID. Requires agent_id (must hold the 'listings' capability).",
   inputSchema: {
     type: "object",
     properties: {
+      ...AGENT_ID_PROPERTY,
       product_id: { type: "string", description: "The ID of the product to disable" },
     },
-    required: ["product_id"],
+    required: ["agent_id", "product_id"],
   },
 };
 
 const enableProduct: Tool = {
   name: "gumroad_enable_product",
-  description: "Enables a product by its ID",
+  description: "Enables a product by its ID. Requires agent_id (must hold the 'listings' capability).",
   inputSchema: {
     type: "object",
     properties: {
+      ...AGENT_ID_PROPERTY,
       product_id: { type: "string", description: "The ID of the product to enable" },
     },
-    required: ["product_id"],
+    required: ["agent_id", "product_id"],
   },
 };
 
@@ -116,10 +122,11 @@ const getOfferCode: Tool = {
 
 const createOfferCode: Tool = {
   name: "gumroad_create_offer_code",
-  description: "Creates a new offer code for a product",
+  description: "Creates a new offer code for a product. Requires agent_id (must hold the 'listings' capability).",
   inputSchema: {
     type: "object",
     properties: {
+      ...AGENT_ID_PROPERTY,
       product_id: { type: "string", description: "The ID of the product this offer applies to" },
       name: { type: "string", description: "The name/code of the offer (coupon code used at checkout)" },
       amount_off: { type: "number", description: "The amount to discount" },
@@ -131,34 +138,38 @@ const createOfferCode: Tool = {
       max_purchase_count: { type: "number", description: "Maximum number of times this offer can be used" },
       universal: { type: "boolean", description: "Whether this offer applies to all products. Default: false" },
     },
-    required: ["product_id", "name", "amount_off"],
+    required: ["agent_id", "product_id", "name", "amount_off"],
   },
 };
 
 const updateOfferCode: Tool = {
   name: "gumroad_update_offer_code",
-  description: "Updates the max purchase count of an existing offer code for a product",
+  description:
+    "Updates the max purchase count of an existing offer code for a product. Requires agent_id " +
+    "(must hold the 'listings' capability).",
   inputSchema: {
     type: "object",
     properties: {
+      ...AGENT_ID_PROPERTY,
       product_id: { type: "string", description: "The ID of the product this offer applies to" },
       offer_code_id: { type: "string", description: "The ID of the offer code to update" },
       max_purchase_count: { type: "number", description: "Maximum number of times this offer can be used" },
     },
-    required: ["product_id", "offer_code_id"],
+    required: ["agent_id", "product_id", "offer_code_id"],
   },
 };
 
 const deleteOfferCode: Tool = {
   name: "gumroad_delete_offer_code",
-  description: "Deletes an offer code for a product",
+  description: "Deletes an offer code for a product. Requires agent_id (must hold the 'listings' capability).",
   inputSchema: {
     type: "object",
     properties: {
+      ...AGENT_ID_PROPERTY,
       product_id: { type: "string", description: "The ID of the product this offer applies to" },
       offer_code_id: { type: "string", description: "The ID of the offer code to delete" },
     },
-    required: ["product_id", "offer_code_id"],
+    required: ["agent_id", "product_id", "offer_code_id"],
   },
 };
 
@@ -205,6 +216,7 @@ export const createServer = (accessToken: string, baseUrl: string | undefined) =
           };
         }
         case "gumroad_disable_product": {
+          await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
           const productId = request.params.arguments.product_id as string;
           const response = await gumroadClient.disableProduct(productId);
           return {
@@ -212,6 +224,7 @@ export const createServer = (accessToken: string, baseUrl: string | undefined) =
           };
         }
         case "gumroad_enable_product": {
+          await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
           const productId = request.params.arguments.product_id as string;
           const response = await gumroadClient.enableProduct(productId);
           return {
@@ -240,12 +253,14 @@ export const createServer = (accessToken: string, baseUrl: string | undefined) =
           };
         }
         case "gumroad_create_offer_code": {
+          await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
           // Type assertion to ensure type safety
           const productId = request.params.arguments.product_id as string;
-          // Remove product_id from arguments as it's now a separate parameter
+          // Remove product_id and agent_id from arguments as they're not part of the Gumroad payload
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          const { product_id: _, ...params } = request.params.arguments as unknown as {
+          const { product_id: _, agent_id: _a, ...params } = request.params.arguments as unknown as {
             product_id: string;
+            agent_id: string;
             name: string;
             amount_off: number;
             offer_type?: "cents" | "percent";
@@ -264,17 +279,19 @@ export const createServer = (accessToken: string, baseUrl: string | undefined) =
           };
         }
         case "gumroad_update_offer_code": {
+          await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
           const productId = request.params.arguments.product_id as string;
           const offerCodeId = request.params.arguments.offer_code_id as string;
-          // Remove product_id and offer_code_id from arguments as they're now separate parameters
+          // Remove product_id, offer_code_id and agent_id from arguments as they're not part of the Gumroad payload
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          const { product_id: _p, offer_code_id: _o, ...updateParams } = request.params.arguments;
+          const { product_id: _p, offer_code_id: _o, agent_id: _a, ...updateParams } = request.params.arguments;
           const response = await gumroadClient.updateOfferCode(productId, offerCodeId, updateParams);
           return {
             content: [{ type: "text", text: JSON.stringify(response) }],
           };
         }
         case "gumroad_delete_offer_code": {
+          await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
           const productId = request.params.arguments.product_id as string;
           const offerCodeId = request.params.arguments.offer_code_id as string;
           const response = await gumroadClient.deleteOfferCode(productId, offerCodeId);
