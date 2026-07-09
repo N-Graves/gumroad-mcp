@@ -1,5 +1,20 @@
 # Gumroad MCP Server
 
+> **This is a fork of [rmarescu/gumroad-mcp](https://github.com/rmarescu/gumroad-mcp)** with the following changes:
+> - Security audit: `npm audit fix` resolved 19 known vulnerabilities (0 remaining), including a ReDoS and a DNS-rebinding issue in the MCP SDK dependency.
+> - Added `agent_id`-based capability gating (see below) to every mutating tool (`gumroad_disable_product`, `gumroad_enable_product`, `gumroad_create_offer_code`, `gumroad_update_offer_code`, `gumroad_delete_offer_code`) — new file `src/agent-capability.ts`, not part of upstream.
+> - Verified against a real live Gumroad account before use.
+>
+> ## Security model: `agent_id` capability gating
+>
+> Built for a multi-agent fleet where several AI agents share one MCP process, and the underlying platform doesn't propagate per-agent caller identity down to MCP tool calls — a real, documented limitation of the current MCP ecosystem. Every mutating tool now **requires an `agent_id` argument**, verified against an external authorization endpoint (`FLEET_BOARD_URL`, default `http://127.0.0.1:8420`) before doing anything.
+>
+> **Honest limitation:** `agent_id` is self-reported by the caller, not cryptographically bound by the MCP protocol. This turns a *silent* wrong-agent action into a *loud, rejected, auditable* one — it does not stop a determined malicious actor from lying about its own identity.
+>
+> Running standalone? Either stand up a minimal service at `FLEET_BOARD_URL` returning a JSON array of capability strings for `GET /agents/{id}/capabilities`, or remove the `checkCapability`/`requireCapability` calls in `src/server.ts` — they're isolated to five tools and clearly marked.
+
+---
+
 <a href="https://smithery.ai/server/@rmarescu/gumroad-mcp"><img alt="Smithery Badge" src="https://smithery.ai/badge/@rmarescu/gumroad-mcp"></a>
 <video src="https://gist.github.com/user-attachments/assets/3750b072-053c-40a0-9c89-361f861350db" controls autoplay loop muted>
 Your browser does not support the video tag.
