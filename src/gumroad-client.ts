@@ -80,6 +80,16 @@ interface UpdateOfferCodeArgs {
   max_purchase_count?: number;
 }
 
+interface UpdateProductArgs {
+  name?: string;
+  description?: string;
+  price?: number;
+  tags?: string[];
+  categories?: string[];
+  custom_summary?: string;
+  published?: boolean;
+}
+
 interface GumroadResponse<T> {
   success: boolean;
   next_page_key?: string;
@@ -233,6 +243,21 @@ export class GumroadClient {
     const response = await fetch(url, {
       headers: this.headers,
       method: "DELETE",
+    });
+    return response.json();
+  }
+
+  async updateProduct(
+    productId: string,
+    params: UpdateProductArgs,
+  ): Promise<{ success: boolean; product?: Product; message?: string }> {
+    const url = `${this.apiUrl}/products/${productId}`;
+    console.error("Making request to:", url);
+
+    const response = await fetch(url, {
+      body: JSON.stringify(params),
+      headers: this.headers,
+      method: "PUT",
     });
     return response.json();
   }

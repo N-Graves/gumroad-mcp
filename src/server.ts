@@ -173,6 +173,26 @@ const deleteOfferCode: Tool = {
   },
 };
 
+const updateProduct: Tool = {
+  name: "gumroad_update_product",
+  description: "Updates product metadata including tags, categories, price, summary, and published status. Requires agent_id (must hold the 'listings' capability).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      ...AGENT_ID_PROPERTY,
+      product_id: { type: "string", description: "The ID of the product to update" },
+      name: { type: "string", description: "Product name" },
+      description: { type: "string", description: "Product description" },
+      price: { type: "number", description: "Product price in dollars" },
+      tags: { type: "array", items: { type: "string" }, description: "Array of tags for the product" },
+      categories: { type: "array", items: { type: "string" }, description: "Array of category IDs" },
+      custom_summary: { type: "string", description: "Custom summary text displayed at checkout" },
+      published: { type: "boolean", description: "Whether the product is published (true) or draft (false)" },
+    },
+    required: ["agent_id", "product_id"],
+  },
+};
+
 export const createServer = (accessToken: string, baseUrl: string | undefined) => {
   const gumroadClient = new GumroadClient(accessToken, baseUrl);
 
@@ -227,6 +247,25 @@ export const createServer = (accessToken: string, baseUrl: string | undefined) =
           await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
           const productId = request.params.arguments.product_id as string;
           const response = await gumroadClient.enableProduct(productId);
+          return {
+            content: [{ type: "text", text: JSON.stringify(response) }],
+          };
+        }
+        case "gumroad_update_product": {
+          await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
+          const productId = request.params.arguments.product_id as string;
+          const updateParams = {
+            name: request.params.arguments.name,
+            description: request.params.arguments.description,
+            price: request.params.arguments.price,
+            tags: request.params.arguments.tags,
+            categories: request.params.arguments.categories,
+            custom_summary: request.params.arguments.custom_summary,
+            published: request.params.arguments.published,
+          };
+          // Remove undefined fields to avoid sending them to the API
+          Object.keys(updateParams).forEach((key) => updateParams[key as keyof typeof updateParams] === undefined && delete updateParams[key as keyof typeof updateParams]);
+          const response = await gumroadClient.updateProduct(productId, updateParams);
           return {
             content: [{ type: "text", text: JSON.stringify(response) }],
           };
@@ -327,6 +366,7 @@ export const createServer = (accessToken: string, baseUrl: string | undefined) =
         getSales,
         disableProduct,
         enableProduct,
+        updateProduct,
         getOfferCodes,
         getOfferCode,
         createOfferCode,
