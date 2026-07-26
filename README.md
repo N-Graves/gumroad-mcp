@@ -58,6 +58,7 @@ Once configured, try these commands in your MCP-compatible client:
 - `gumroad_get_product` - Get a single product by ID
 - `gumroad_disable_product` - Disable a product
 - `gumroad_enable_product` - Enable a product
+- `gumroad_update_product` - Update product metadata (tags, categories, price, custom summary, published status)
 
 ### [Sales](https://gumroad.com/api#sales)
 
