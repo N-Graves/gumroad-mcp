@@ -75,6 +75,29 @@ Once configured, try these commands in your MCP-compatible client:
 ### [User](https://gumroad.com/api#user)
 
 - `gumroad_get_user` - Get authenticated user data
+- `gumroad_get_categories` - Taxonomy categories and their ids
+
+### Everything else
+
+The 20 tools above are the common path. The rest of the Gumroad v2 API - 105
+operations in total, covering variants and pricing tiers, storefront pages, the
+media library, upsells, UTM links, email broadcasts and workflows, custom
+fields, subscribers, reviews, licences, webhooks, refunds and tax forms - is
+reachable through two tools rather than 60 more:
+
+- `gumroad_list_operations` - the full catalogue: name, method, path, required
+  path parameters, capability tier. Filter by `tier` or `search`.
+- `gumroad_call` - run any operation by name.
+
+Why a dispatcher rather than a tool each: every registered tool's schema is sent
+to every agent on every turn, so one tool per endpoint took this server from
+12,515 to roughly 51,300 characters of permanently-advertised surface. The
+catalogue does the same job in 14,394.
+
+Operations are capability-tiered - `read` broadly, `financial` for LEDGER,
+`write` for the agent that owns listings - and the sixteen that cannot be undone
+(deletes, refunds, sending a broadcast to real customers) additionally require
+`confirm: true`.
 
 ## Installation
 

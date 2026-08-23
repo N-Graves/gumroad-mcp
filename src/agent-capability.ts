@@ -18,10 +18,18 @@ const FLEET_BOARD_URL = process.env.FLEET_BOARD_URL || "http://127.0.0.1:8420";
 
 export class CapabilityError extends Error {}
 
-export async function requireCapability(agentId: unknown, capability: string): Promise<void> {
+export async function requireCapability(
+  agentId: unknown,
+  capability: string | string[],
+): Promise<void> {
+  // A tier maps to several acceptable capabilities (see TIER_CAPABILITIES), so
+  // this takes any-of rather than forcing the caller to loop and swallow the
+  // first rejection - which is how a check ends up passing for the wrong reason.
+  const accepted = Array.isArray(capability) ? capability : [capability];
+  const label = accepted.length === 1 ? `"${accepted[0]}"` : `one of ${accepted.map((c) => `"${c}"`).join(", ")}`;
   if (typeof agentId !== "string" || !agentId) {
     throw new CapabilityError(
-      `agent_id is required for this action (must hold the "${capability}" capability).`,
+      `agent_id is required for this action (must hold ${label}).`,
     );
   }
   const res = await fetch(`${FLEET_BOARD_URL}/agents/${encodeURIComponent(agentId)}/capabilities`);
@@ -31,9 +39,10 @@ export async function requireCapability(agentId: unknown, capability: string): P
     );
   }
   const caps = (await res.json()) as unknown;
-  if (!Array.isArray(caps) || !caps.includes(capability)) {
+  if (!Array.isArray(caps) || !accepted.some((c) => caps.includes(c))) {
     throw new CapabilityError(
-      `Agent "${agentId}" does not hold the "${capability}" capability - action rejected.`,
+      `Agent "${agentId}" does not hold ${label} - action rejected. It holds ` +
+      `${Array.isArray(caps) ? JSON.stringify(caps) : "nothing readable"}.`,
     );
   }
 }
