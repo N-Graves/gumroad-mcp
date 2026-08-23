@@ -99,6 +99,12 @@ interface GumroadResponse<T> {
   offer_codes?: T[];
 }
 
+// Endpoints added 2026-08-20 whose payloads are not modelled field by field.
+// Deliberately loose rather than a guessed-at interface: an interface that
+// claims fields the API does not return is worse than an honest bag, and these
+// are passed straight through to the caller as JSON anyway.
+type GumroadApiResult = Record<string, unknown> & { success?: boolean; message?: string };
+
 interface GetSalesArgs {
   after?: string;
   before?: string;
@@ -260,5 +266,222 @@ export class GumroadClient {
       method: "PUT",
     });
     return response.json();
+  }
+
+  // ---------------------------------------------------------------------
+  // Product lifecycle (NAS Digital, 2026-08-20)
+  //
+  // Upstream rmarescu/gumroad-mcp last shipped 2025-04-21 and never wrapped
+  // these, so agents reported "no create listing endpoint" and concluded
+  // Gumroad could not do it. Gumroad's own config/routes.rb says otherwise -
+  // `resources :links, path: "products", only: [..., :create, :destroy]` -
+  // and a read-only probe of the live API returned 200 across the whole
+  // current surface, so the deployment carries it.
+  // ---------------------------------------------------------------------
+
+  /**
+   * Create a product. It is created as a DRAFT with purchases disabled -
+   * Gumroad's own controller sets `draft = true` and `purchase_disabled_at`,
+   * so this cannot put anything on sale by itself. Publishing is a separate
+   * enableProduct call, which is the right shape for a HITL fleet.
+   *
+   * Physical and legacy product types are rejected by Gumroad for creation;
+   * native_type defaults to "digital".
+   *
+   * `price` is in CENTS here, matching the API, even though updateProduct's
+   * existing `price` is in dollars - that asymmetry is upstream's and is
+   * called out in the tool description rather than silently normalised,
+   * because guessing wrong about someone's price is expensive.
+   */
+  async createProduct(params: Record<string, unknown>): Promise<GumroadApiResult> {
+    const url = `${this.apiUrl}/products`;
+    console.error("Making request to:", url);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify(params),
+    });
+    return response.json();
+  }
+
+  async deleteProduct(productId: string): Promise<GumroadApiResult> {
+    const url = `${this.apiUrl}/products/${productId}`;
+    console.error("Making request to:", url);
+    const response = await fetch(url, { method: "DELETE", headers: this.headers });
+    return response.json();
+  }
+
+  /** A cover image on the product page. Accepts a public url or a signed_blob_id. */
+  async addProductCover(productId: string, body: Record<string, unknown>): Promise<GumroadApiResult> {
+    const url = `${this.apiUrl}/products/${productId}/covers`;
+    console.error("Making request to:", url);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify(body),
+    });
+    return response.json();
+  }
+
+  /** The small thumbnail used in listings and search. Same two input shapes. */
+  async setProductThumbnail(productId: string, body: Record<string, unknown>): Promise<GumroadApiResult> {
+    const url = `${this.apiUrl}/products/${productId}/thumbnail`;
+    console.error("Making request to:", url);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify(body),
+    });
+    return response.json();
+  }
+
+  /** Taxonomy categories - you need one of these ids for a product's taxonomy_id. */
+  async getCategories(): Promise<GumroadApiResult> {
+    const response = await fetch(`${this.apiUrl}/categories`, { headers: this.headers });
+    return response.json();
+  }
+
+  /** Totals rather than the sale-by-sale list getSales returns. */
+  async getSalesSummary(params?: Record<string, string>): Promise<GumroadApiResult> {
+    const qs = new URLSearchParams(params || {}).toString();
+    const url = `${this.apiUrl}/sales/summary${qs ? `?${qs}` : ""}`;
+    console.error("Making request to:", url);
+    const response = await fetch(url, { headers: this.headers });
+    return response.json();
+  }
+
+  async getPayouts(upcoming = false): Promise<GumroadApiResult> {
+    const url = `${this.apiUrl}/payouts${upcoming ? "/upcoming" : ""}`;
+    console.error("Making request to:", url);
+    const response = await fetch(url, { headers: this.headers });
+    return response.json();
+  }
+
+  // ---------------------------------------------------------------------
+  // Uploads. Two entirely separate mechanisms, because Gumroad treats an
+  // IMAGE and a SELLABLE FILE differently:
+  //
+  //   images -> POST /v2/direct_uploads reserves an ActiveStorage blob, the
+  //             bytes go straight to storage, and the returned signed_id is
+  //             what covers/thumbnail accept.
+  //   files  -> POST /v2/files/presign returns presigned S3 multipart URLs,
+  //             the bytes go to S3 part by part, and /v2/files/complete
+  //             assembles them into the file_url a product's `files` takes.
+  //
+  // Neither touches a product, so both are safe to exercise on their own.
+  // ---------------------------------------------------------------------
+
+  /** Upload a local image and return the signed_blob_id covers/thumbnail want. */
+  async uploadImage(filePath: string, purpose?: "media"): Promise<{ signed_blob_id?: string; message?: string; success: boolean }> {
+    const { readFile } = await import("node:fs/promises");
+    const { createHash } = await import("node:crypto");
+    const { basename, extname } = await import("node:path");
+
+    const bytes = await readFile(filePath);
+    const ext = extname(filePath).toLowerCase();
+    const contentType = ext === ".png" ? "image/png"
+      : ext === ".gif" ? "image/gif"
+      : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg"
+      : "";
+    if (!contentType) {
+      return { success: false, message: `Unsupported image type "${ext}" - Gumroad accepts jpeg, png and gif.` };
+    }
+    // ActiveStorage wants a base64 MD5, not a hex digest.
+    const checksum = createHash("md5").update(bytes).digest("base64");
+
+    const reserveUrl = `${this.apiUrl}/direct_uploads`;
+    console.error("Making request to:", reserveUrl);
+    const reserveRes = await fetch(reserveUrl, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({
+        blob: { filename: basename(filePath), byte_size: bytes.byteLength, checksum, content_type: contentType },
+        ...(purpose ? { purpose } : {}),
+      }),
+    });
+    const reserved = (await reserveRes.json()) as {
+      signed_id?: string;
+      direct_upload?: { url: string; headers: Record<string, string> };
+      message?: string;
+    };
+    if (!reserved.signed_id || !reserved.direct_upload) {
+      return { success: false, message: reserved.message || "Gumroad did not return a direct upload reservation." };
+    }
+
+    const put = await fetch(reserved.direct_upload.url, {
+      method: "PUT",
+      headers: reserved.direct_upload.headers,
+      body: new Uint8Array(bytes),
+    });
+    if (!put.ok) {
+      return { success: false, message: `Upload failed (${put.status}) - the reservation was made but the bytes did not land.` };
+    }
+    return { success: true, signed_blob_id: reserved.signed_id };
+  }
+
+  /**
+   * Upload a local file for sale and return its file_url.
+   *
+   * Multipart: /files/presign hands back one presigned URL per 100 MB part,
+   * each part is PUT directly to S3, and /files/complete needs every part's
+   * ETag back in order. A failure part-way leaves an incomplete multipart
+   * upload, so it is aborted rather than left to linger.
+   */
+  async uploadProductFile(filePath: string): Promise<{ file_url?: string; message?: string; success: boolean }> {
+    const { readFile } = await import("node:fs/promises");
+    const { basename } = await import("node:path");
+
+    const bytes = await readFile(filePath);
+    const presignUrl = `${this.apiUrl}/files/presign`;
+    console.error("Making request to:", presignUrl);
+    const presignRes = await fetch(presignUrl, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({ filename: basename(filePath), file_size: bytes.byteLength }),
+    });
+    const presigned = (await presignRes.json()) as {
+      success?: boolean;
+      upload_id?: string;
+      key?: string;
+      file_url?: string;
+      parts?: { part_number: number; presigned_url: string }[];
+      message?: string;
+    };
+    if (!presigned.success || !presigned.parts || !presigned.upload_id || !presigned.key) {
+      return { success: false, message: presigned.message || "Gumroad did not return a presigned upload." };
+    }
+
+    const PART_SIZE = 100 * 1024 * 1024;
+    const completed: { part_number: number; etag: string }[] = [];
+    try {
+      for (const part of presigned.parts) {
+        const start = (part.part_number - 1) * PART_SIZE;
+        const chunk = bytes.subarray(start, Math.min(start + PART_SIZE, bytes.byteLength));
+        const put = await fetch(part.presigned_url, { method: "PUT", body: new Uint8Array(chunk) });
+        if (!put.ok) throw new Error(`part ${part.part_number} failed with ${put.status}`);
+        const etag = put.headers.get("etag");
+        if (!etag) throw new Error(`part ${part.part_number} returned no ETag`);
+        completed.push({ part_number: part.part_number, etag });
+      }
+    } catch (err) {
+      // Leave no half-finished multipart upload behind.
+      await fetch(`${this.apiUrl}/files/abort`, {
+        method: "POST",
+        headers: this.headers,
+        body: JSON.stringify({ upload_id: presigned.upload_id, key: presigned.key }),
+      }).catch(() => undefined);
+      return { success: false, message: `Upload aborted: ${err instanceof Error ? err.message : String(err)}` };
+    }
+
+    const completeRes = await fetch(`${this.apiUrl}/files/complete`, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({ upload_id: presigned.upload_id, key: presigned.key, parts: completed }),
+    });
+    const done = (await completeRes.json()) as { success?: boolean; file_url?: string; message?: string };
+    if (!done.success || !done.file_url) {
+      return { success: false, message: done.message || "Gumroad did not confirm the completed upload." };
+    }
+    return { success: true, file_url: done.file_url };
   }
 }
