@@ -9,6 +9,8 @@ import { config } from "dotenv";
 
 import { GumroadClient } from "./gumroad-client.js";
 import { requireCapability } from "./agent-capability.js";
+import { OPERATIONS } from "./operations.js";
+import { dispatch, CONFIRM_REQUIRED } from "./dispatch.js";
 
 config();
 
@@ -358,6 +360,64 @@ const getPayouts: Tool = {
   },
 };
 
+
+// ---------------------------------------------------------------------------
+// The rest of the API (NAS Digital, 2026-08-20). Nathan: "all of them, i want
+// full control via api."
+//
+// Behind a catalogue + dispatcher rather than ~60 more registered tools, and
+// the reason is measured rather than stylistic: every tool's schema is sent to
+// every agent on every turn (no per-agent MCP scoping - openclaw#67682), so one
+// tool per endpoint took this server from 12,515 to ~51,300 chars, which would
+// have made Gumroad the fleet's second-largest MCP surface - larger than the
+// fleet board itself - including for the eight agents that never touch it.
+// etsy-mcp already solved this exact problem here: 105 operations, 5,332 chars.
+//
+// The 20 bespoke tools stay. They are the common path, agents already use them,
+// and their descriptions carry the traps a generic dispatcher cannot state
+// (create's price is in cents while update's is in dollars; create makes a
+// draft, never a live listing).
+// ---------------------------------------------------------------------------
+
+const listOperations: Tool = {
+  name: "gumroad_list_operations",
+  description:
+    "The full Gumroad API catalogue - every operation, its method, path, required path " +
+    "parameters and the capability tier it sits in. Call this FIRST to find the operation " +
+    "you need, then run it with gumroad_call. Filter with `tier` (read / financial / write / " +
+    "destructive) or `search` (matches name and summary). Operations already covered by a " +
+    "dedicated tool are marked `wrapped_by` - prefer that tool, its description carries " +
+    "warnings this catalogue does not. Read-only, no agent_id needed.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      tier: { type: "string", enum: ["read", "financial", "write", "destructive"], description: "Filter by tier" },
+      search: { type: "string", description: "Match against operation name and summary, e.g. 'variant' or 'webhook'" },
+    },
+  },
+};
+
+const callOperation: Tool = {
+  name: "gumroad_call",
+  description:
+    "Run any Gumroad API operation by name - the whole API, not just the tools listed here. " +
+    "Find the name with gumroad_list_operations. Pass path parameters and body/query " +
+    "parameters together in `params`; the dispatcher works out which is which from the " +
+    "operation's path. Capability-gated by tier: reads are broad, writes need 'listings', " +
+    "and the irreversible ones (deletes, refunds, sending mail to real customers) also need " +
+    "confirm=true. Requires agent_id.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      ...AGENT_ID_PROPERTY,
+      operation: { type: "string", description: "Operation name from gumroad_list_operations, e.g. 'createVariant'" },
+      params: { type: "object", description: "Path, query and body parameters together, e.g. { id: 'abc', name: 'Deluxe' }" },
+      confirm: { type: "boolean", description: "Required for irreversible operations - deletes, refunds, sending a broadcast" },
+    },
+    required: ["agent_id", "operation"],
+  },
+};
+
 export const createServer = (accessToken: string, baseUrl: string | undefined) => {
   const gumroadClient = new GumroadClient(accessToken, baseUrl);
 
@@ -416,6 +476,44 @@ export const createServer = (accessToken: string, baseUrl: string | undefined) =
             content: [{ type: "text", text: JSON.stringify(response) }],
           };
         }
+        case "gumroad_list_operations": {
+          const tier = request.params.arguments.tier as string | undefined;
+          const search = (request.params.arguments.search as string | undefined)?.toLowerCase();
+          const rows = OPERATIONS.filter((o) => {
+            if (tier && o.tier !== tier) return false;
+            if (search && !`${o.name} ${o.summary}`.toLowerCase().includes(search)) return false;
+            return true;
+          }).map((o) => ({
+            operation: o.name,
+            method: o.method,
+            path: o.path,
+            tier: o.tier,
+            summary: o.summary,
+            ...(o.pathParams.length ? { path_params: o.pathParams } : {}),
+            ...(o.params ? { params: o.params } : {}),
+            ...(o.wrappedBy ? { wrapped_by: o.wrappedBy } : {}),
+            ...(CONFIRM_REQUIRED.has(o.name) ? { needs_confirm: true } : {}),
+          }));
+          return {
+            content: [{ type: "text", text: JSON.stringify({ count: rows.length, operations: rows }) }],
+          };
+        }
+
+        case "gumroad_call": {
+          const args = {
+            ...(request.params.arguments.params as Record<string, unknown> | undefined),
+            agent_id: request.params.arguments.agent_id,
+            confirm: request.params.arguments.confirm,
+          };
+          const response = await dispatch(
+            `${(baseUrl || GumroadClient.BASE_URL).replace(/\/$/, "")}/v2`,
+            { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+            request.params.arguments.operation as string,
+            args,
+          );
+          return { content: [{ type: "text", text: JSON.stringify(response) }] };
+        }
+
         case "gumroad_create_product": {
           await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
           const a = request.params.arguments;
@@ -623,6 +721,8 @@ export const createServer = (accessToken: string, baseUrl: string | undefined) =
         getSales,
         getSalesSummary,
         getPayouts,
+        listOperations,
+        callOperation,
         getCategories,
         createProduct,
         deleteProduct,
