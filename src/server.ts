@@ -193,6 +193,171 @@ const updateProduct: Tool = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Product lifecycle (NAS Digital, 2026-08-20)
+//
+// Nathan: "agents report no create listing endpoint?" - they were right about
+// this server and wrong about Gumroad. Upstream last shipped 2025-04-21 and
+// only ever wrapped a read-mostly slice; Gumroad's own routes.rb carries
+// :create and :destroy on products, plus covers, thumbnail and two upload
+// flows, and a read-only probe of the live API confirmed the deployment has
+// all of it.
+//
+// Reads stay UNGATED, matching the existing split - LEDGER holds `finance`,
+// not `listings`, and gating the money reads would lock out the one agent
+// whose job is reading them.
+// ---------------------------------------------------------------------------
+
+const createProduct: Tool = {
+  name: "gumroad_create_product",
+  description:
+    "Creates a NEW Gumroad product. It is created as a DRAFT with purchases disabled - " +
+    "Gumroad itself sets draft=true, so this cannot put anything on sale. Publishing is a " +
+    "separate gumroad_enable_product call once Nathan has approved it. " +
+    "NOTE price is in CENTS here (the API's own unit), unlike gumroad_update_product's " +
+    "price which is in dollars. Physical products cannot be created through the API. " +
+    "Requires agent_id (must hold the 'listings' capability).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      ...AGENT_ID_PROPERTY,
+      name: { type: "string", description: "Product name" },
+      price: { type: "number", description: "Price in CENTS (e.g. 1200 for $12.00). 0 for pay-what-you-want" },
+      description: { type: "string", description: "Product description (HTML allowed)" },
+      native_type: {
+        type: "string",
+        enum: ["digital", "membership", "bundle", "ebook", "course", "coffee", "podcast", "audiobook", "physical_good_placeholder"],
+        description: "Product type, default 'digital'. 'physical' is rejected by Gumroad for API creation",
+      },
+      price_currency_type: { type: "string", description: "ISO currency, e.g. 'usd' or 'gbp'. Defaults to the seller's currency" },
+      custom_permalink: { type: "string", description: "The url slug, e.g. 'floating-islands'" },
+      custom_summary: { type: "string", description: "Short summary shown at checkout" },
+      tags: { type: "array", items: { type: "string" }, description: "Tags for discovery" },
+      taxonomy_id: { type: "string", description: "Category id from gumroad_get_categories. Defaults to 'other'" },
+      max_purchase_count: { type: "number", description: "Limit total sales (leave unset for unlimited)" },
+      customizable_price: { type: "boolean", description: "Pay-what-you-want" },
+      suggested_price_cents: { type: "number", description: "Suggested price for pay-what-you-want, in cents" },
+      subscription_duration: {
+        type: "string",
+        description: "Membership billing period (monthly/quarterly/biannually/yearly). Only valid when native_type is 'membership'",
+      },
+      files: {
+        type: "array",
+        items: { type: "object" },
+        description: "Files to sell, each { url } - get the url from gumroad_upload_product_file",
+      },
+    },
+    required: ["agent_id", "name", "price"],
+  },
+};
+
+const deleteProduct: Tool = {
+  name: "gumroad_delete_product",
+  description:
+    "PERMANENTLY deletes a product. Not reversible. Prefer gumroad_disable_product, which takes " +
+    "it off sale while keeping the listing and its sales history. Requires confirm_delete=true as " +
+    "well as agent_id, so a mistyped product id cannot destroy a listing on its own. " +
+    "Requires agent_id (must hold the 'listings' capability).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      ...AGENT_ID_PROPERTY,
+      product_id: { type: "string", description: "The product to delete" },
+      confirm_delete: { type: "boolean", description: "Must be true. Deliberate friction on an irreversible action" },
+    },
+    required: ["agent_id", "product_id", "confirm_delete"],
+  },
+};
+
+const uploadProductFile: Tool = {
+  name: "gumroad_upload_product_file",
+  description:
+    "Uploads a LOCAL file for sale and returns its file_url, which you then pass in " +
+    "gumroad_create_product's `files` array. This is the actual thing the buyer downloads. " +
+    "Handles the multipart upload itself. Touches no product on its own. " +
+    "Requires agent_id (must hold the 'listings' capability).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      ...AGENT_ID_PROPERTY,
+      file_path: { type: "string", description: "Absolute path to the local file" },
+    },
+    required: ["agent_id", "file_path"],
+  },
+};
+
+const setProductCover: Tool = {
+  name: "gumroad_set_product_cover",
+  description:
+    "Adds a cover image to a product's page - the large image buyers see. Give EITHER a local " +
+    "file_path (uploaded for you) OR a publicly reachable url. Products can carry several covers; " +
+    "this adds one. Requires agent_id (must hold the 'listings' capability).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      ...AGENT_ID_PROPERTY,
+      product_id: { type: "string", description: "The product to add a cover to" },
+      file_path: { type: "string", description: "Absolute path to a local jpeg/png/gif" },
+      url: { type: "string", description: "Alternatively, a publicly reachable image url" },
+    },
+    required: ["agent_id", "product_id"],
+  },
+};
+
+const setProductThumbnail: Tool = {
+  name: "gumroad_set_product_thumbnail",
+  description:
+    "Sets the product's thumbnail - the small image used in listings and search, so it must read " +
+    "at a small size. Give EITHER a local file_path OR a public url. Replaces any existing " +
+    "thumbnail. Requires agent_id (must hold the 'listings' capability).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      ...AGENT_ID_PROPERTY,
+      product_id: { type: "string", description: "The product to set a thumbnail on" },
+      file_path: { type: "string", description: "Absolute path to a local jpeg/png/gif" },
+      url: { type: "string", description: "Alternatively, a publicly reachable image url" },
+    },
+    required: ["agent_id", "product_id"],
+  },
+};
+
+const getCategories: Tool = {
+  name: "gumroad_get_categories",
+  description:
+    "Lists Gumroad's taxonomy categories and their ids. Call this to get a taxonomy_id before " +
+    "creating a product - without one the product lands in 'other'. Read-only, no agent_id needed.",
+  inputSchema: { type: "object", properties: {} },
+};
+
+const getSalesSummary: Tool = {
+  name: "gumroad_get_sales_summary",
+  description:
+    "Totals rather than the sale-by-sale list gumroad_get_sales returns: gross, net, units and " +
+    "refunds. Far cheaper than paging every sale to add them up. Read-only, no agent_id needed.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      after: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "Start date (YYYY-MM-DD)" },
+      before: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "End date (YYYY-MM-DD)" },
+    },
+  },
+};
+
+const getPayouts: Tool = {
+  name: "gumroad_get_payouts",
+  description:
+    "Gumroad's payouts to the seller - what has actually been paid out, as opposed to what has " +
+    "been sold. Set upcoming=true for the next scheduled payout instead of the history. " +
+    "Read-only, no agent_id needed.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      upcoming: { type: "boolean", description: "Return the upcoming payout rather than past ones" },
+    },
+  },
+};
+
 export const createServer = (accessToken: string, baseUrl: string | undefined) => {
   const gumroadClient = new GumroadClient(accessToken, baseUrl);
 
@@ -251,6 +416,98 @@ export const createServer = (accessToken: string, baseUrl: string | undefined) =
             content: [{ type: "text", text: JSON.stringify(response) }],
           };
         }
+        case "gumroad_create_product": {
+          await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
+          const a = request.params.arguments;
+          const params: Record<string, unknown> = {};
+          for (const key of [
+            "name", "price", "description", "native_type", "price_currency_type",
+            "custom_permalink", "custom_summary", "tags", "taxonomy_id",
+            "max_purchase_count", "customizable_price", "suggested_price_cents",
+            "subscription_duration", "files",
+          ]) {
+            if (a[key] !== undefined) params[key] = a[key];
+          }
+          const response = await gumroadClient.createProduct(params);
+          return { content: [{ type: "text", text: JSON.stringify(response) }] };
+        }
+
+        case "gumroad_delete_product": {
+          await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
+          if (request.params.arguments.confirm_delete !== true) {
+            // Deliberate friction: deletion is irreversible and disable_product
+            // is almost always what was actually meant.
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  success: false,
+                  message:
+                    "Refused: deleting a product is permanent. Pass confirm_delete=true if you " +
+                    "really mean it, or use gumroad_disable_product to take it off sale while " +
+                    "keeping the listing and its sales history.",
+                }),
+              }],
+            };
+          }
+          const response = await gumroadClient.deleteProduct(request.params.arguments.product_id as string);
+          return { content: [{ type: "text", text: JSON.stringify(response) }] };
+        }
+
+        case "gumroad_upload_product_file": {
+          await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
+          const response = await gumroadClient.uploadProductFile(request.params.arguments.file_path as string);
+          return { content: [{ type: "text", text: JSON.stringify(response) }] };
+        }
+
+        case "gumroad_set_product_cover":
+        case "gumroad_set_product_thumbnail": {
+          await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
+          const productId = request.params.arguments.product_id as string;
+          const filePath = request.params.arguments.file_path as string | undefined;
+          const url = request.params.arguments.url as string | undefined;
+          if (!filePath && !url) {
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({ success: false, message: "Give either file_path (a local image) or url (a public one)." }),
+              }],
+            };
+          }
+          let body: Record<string, unknown>;
+          if (filePath) {
+            const uploaded = await gumroadClient.uploadImage(filePath);
+            if (!uploaded.success || !uploaded.signed_blob_id) {
+              return { content: [{ type: "text", text: JSON.stringify(uploaded) }] };
+            }
+            body = { signed_blob_id: uploaded.signed_blob_id };
+          } else {
+            body = { url };
+          }
+          const response = request.params.name === "gumroad_set_product_cover"
+            ? await gumroadClient.addProductCover(productId, body)
+            : await gumroadClient.setProductThumbnail(productId, body);
+          return { content: [{ type: "text", text: JSON.stringify(response) }] };
+        }
+
+        case "gumroad_get_categories": {
+          const response = await gumroadClient.getCategories();
+          return { content: [{ type: "text", text: JSON.stringify(response) }] };
+        }
+
+        case "gumroad_get_sales_summary": {
+          const params: Record<string, string> = {};
+          if (request.params.arguments.after) params.after = request.params.arguments.after as string;
+          if (request.params.arguments.before) params.before = request.params.arguments.before as string;
+          const response = await gumroadClient.getSalesSummary(params);
+          return { content: [{ type: "text", text: JSON.stringify(response) }] };
+        }
+
+        case "gumroad_get_payouts": {
+          const response = await gumroadClient.getPayouts(request.params.arguments.upcoming === true);
+          return { content: [{ type: "text", text: JSON.stringify(response) }] };
+        }
+
         case "gumroad_update_product": {
           await requireCapability(request.params.arguments.agent_id, REQUIRED_CAPABILITY);
           const productId = request.params.arguments.product_id as string;
@@ -364,6 +621,14 @@ export const createServer = (accessToken: string, baseUrl: string | undefined) =
         getProduct,
         getProducts,
         getSales,
+        getSalesSummary,
+        getPayouts,
+        getCategories,
+        createProduct,
+        deleteProduct,
+        uploadProductFile,
+        setProductCover,
+        setProductThumbnail,
         disableProduct,
         enableProduct,
         updateProduct,
