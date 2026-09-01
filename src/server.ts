@@ -443,9 +443,7 @@ export const createServer = (accessToken: string, baseUrl: string | undefined) =
       // capability gate below trusts a checked identity, not just an
       // asserted one. No-ops on the embedded path and on tools that take
       // no agent_id - see isolated-agent.ts.
-      assertClaimedIdentityIsReal(
-        (request.params.arguments as Record<string, unknown> | undefined)?.agent_id,
-      );
+      assertClaimedIdentityIsReal((request.params.arguments as Record<string, unknown> | undefined)?.agent_id);
       if (!request.params.arguments) {
         throw new Error("No arguments provided");
       }
