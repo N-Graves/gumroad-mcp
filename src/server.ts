@@ -9,6 +9,7 @@ import { config } from "dotenv";
 
 import { GumroadClient } from "./gumroad-client.js";
 import { requireCapability } from "./agent-capability.js";
+import { assertNotIsolatedAgent, assertClaimedIdentityIsReal } from "./isolated-agent.js";
 import { OPERATIONS } from "./operations.js";
 import { dispatch, CONFIRM_REQUIRED } from "./dispatch.js";
 
@@ -436,6 +437,15 @@ export const createServer = (accessToken: string, baseUrl: string | undefined) =
   server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
     console.error("Received CallToolRequest:", request);
     try {
+      assertNotIsolatedAgent();
+      // Same choke point, one step further: verify the agent_id this call
+      // CLAIMS against the real OpenClaw-set process identity, so the
+      // capability gate below trusts a checked identity, not just an
+      // asserted one. No-ops on the embedded path and on tools that take
+      // no agent_id - see isolated-agent.ts.
+      assertClaimedIdentityIsReal(
+        (request.params.arguments as Record<string, unknown> | undefined)?.agent_id,
+      );
       if (!request.params.arguments) {
         throw new Error("No arguments provided");
       }
